@@ -61,24 +61,36 @@ int main(void)
     {
         UARTgets(data, 20);
 
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
+        SysCtlDelay(g_ui32SysClock / 30);
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0x00);
+
         char nivel = data[0];  
         UARTprintf("Nivel recibido:%c\n", nivel);
 
-        if(nivel == 'C') 
+        if(nivel == 'C' && comando != 'C') 
         {
             comando = 'C';
+            TimerDisable(TIMER0_BASE, TIMER_A);
             TimerLoadSet(TIMER0_BASE, TIMER_A, g_ui32SysClock); 
+            TimerEnable(TIMER0_BASE, TIMER_A);
+            motor_stop(); 
         }
-        else if(nivel == 'S') 
+        else if(nivel == 'S' && comando != 'S') 
         {
             comando = 'S';
-            TimerLoadSet(TIMER0_BASE, TIMER_A, g_ui32SysClock);
+            TimerDisable(TIMER0_BASE, TIMER_A);
+            TimerLoadSet(TIMER0_BASE, TIMER_A, g_ui32SysClock); 
+            TimerEnable(TIMER0_BASE, TIMER_A);
+            motor_stop(); 
         }
-        else if(nivel == 'M')  
+        else if(nivel == 'M' && comando != 'X')  
         {
             comando = 'X'; 
-            TimerLoadSet(TIMER0_BASE, TIMER_A, g_ui32SysClock*3);
-            motor_start(50);  
+            TimerDisable(TIMER0_BASE, TIMER_A);
+            TimerLoadSet(TIMER0_BASE, TIMER_A, g_ui32SysClock * 3); 
+            TimerEnable(TIMER0_BASE, TIMER_A);
+            motor_start(50); 
         }
     }
 }
@@ -98,6 +110,13 @@ void setup_gpio() {
     }
 
     GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, 0x03);
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION))
+    {
+    }
+
+    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0);
 }
 
 void setup_timer() {
@@ -181,7 +200,7 @@ void setup_pwm() {
     
     PWMGenConfigure(PWM0_BASE, PWM_GEN_3, PWM_GEN_MODE_DOWN);
     
-    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, 4800);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, 40000);
     
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 1);
     
@@ -193,7 +212,7 @@ void setup_pwm() {
 
 void motor_start(uint8_t duty)
 {
-    uint32_t period = 4800;
+    uint32_t period = 40000;
     uint32_t pulse_width = (period * duty) / 100;
     
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, pulse_width);
