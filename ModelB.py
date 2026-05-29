@@ -1,55 +1,42 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
-
 import cv2
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, regularizers
+import socket
 import time
+
+#separacion de recursos graficos 
+import matplotlib
+matplotlib.use('TkAgg')  
 import matplotlib.pyplot as plt
 
-try:
-    import RPi.GPIO as GPIO
-    MODO_PRODUCCION_PI = True
-except ImportError:
-    MODO_PRODUCCION_PI = False
-
-sistema_activo = True
-PIN_BOTON_EMERGENCIA = 23
-ultimo_tick = 0.0
-
-def callback_boton_emergencia(channel=None):
-    global sistema_activo, ultimo_tick
-    
-    if MODO_PRODUCCION_PI and channel is not None:
-        time.sleep(0.05)
-        if GPIO.input(PIN_BOTON_EMERGENCIA) != GPIO.LOW:
-            return
-            
-    sistema_activo = not sistema_activo
-    
-    if not sistema_activo:
-        print("\nPARADA DE EMERGENCIA")
-        exportar_reporte_txt(f"reporte_emergencia_{int(time.time())}.txt", "RESPALDO POR PARADA DE EMERGENCIA")
-    else:
-        print("\nContinuamos")
-        ultimo_tick = time.time()
-
-if MODO_PRODUCCION_PI:
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(PIN_BOTON_EMERGENCIA, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.add_event_detect(PIN_BOTON_EMERGENCIA, GPIO.FALLING, callback=callback_boton_emergencia, bouncetime=400)
-
-
+#iniciar gpu
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
         for gpu in gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
+        print("Crecimiento dinámico de VRAM habilitado.")
     except RuntimeError as e:
-        print(f"Error de GPU: {e}")
+        print(f"Error al configurar la GPU: {e}")
 
 IMG_SIZE = 224
+UMBRAL_CONFIANZA = 0.4
+UMBRAL_SUPERPOSICION = 0.15 
+
+IP_RASPBERRY = "192.168.1.27"  
+PUERTO_UDP = 5000
+
+udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp.setblocking(False)
+
+sistema_activo = True 
+conteo_iniciado = False
+DURACION_MUESTREO = 60  
+tiempo_acumulado = 0.0
+ultimo_tick = 0.0
 
 def construir_modelo_equilibrado():
     backbone = tf.keras.applications.MobileNetV2(
@@ -63,60 +50,63 @@ def construir_modelo_equilibrado():
     salida = layers.Conv2D(9, (1, 1), padding='same', activation='linear')(x)
     return models.Model(inputs=backbone.input, outputs=salida)
 
-print("Construyendo arquitectura y cargando pesos...")
+print("Cargando modelo en la Computadora...")
 modelo = construir_modelo_equilibrado()
 modelo.load_weights('modelo_botellas_ssd_v2.h5')
 print("¡Modelo cargado exitosamente!")
 
 NOMBRES_CLASES = {0: "Coca", 1: "Fanta", 2: "Salvietti", 3: "Pepsi"}
 COLORES = {0: (0, 0, 255), 1: (0, 165, 255), 2: (0, 255, 0), 3: (255, 0, 0)}
-UMBRAL_CONFIANZA = 0.4
-UMBRAL_SUPERPOSICION = 0.15 
 
+inventario_real = {0: 0, 1: 0, 2: 0, 3: 0}
 TAMAÑO_BUFFER = 3  
 buffers = {0: [], 1: [], 2: [], 3: []}
 estado_estable = {0: False, 1: False, 2: False, 3: False}
-inventario_real = {0: 0, 1: 0, 2: 0, 3: 0}
-
-conteo_iniciado = False
-tiempo_acumulado = 0.0  
-DURACION_MUESTREO = 60  
 
 cap = cv2.VideoCapture(0)
-NOMBRE_VENTANA = 'Detector Anti-Rebote'
+NOMBRE_VENTANA = 'Detector Computadora - UDP Bidireccional'
 cv2.namedWindow(NOMBRE_VENTANA, cv2.WINDOW_NORMAL)
 
-def exportar_reporte_txt(nombre_archivo, titulo_encabezado):
-    with open(nombre_archivo, "w", encoding="utf-8") as archivo:
-        archivo.write(f"--- {titulo_encabezado} ---\n")
-        archivo.write("Método: Detección SSD + Filtro Anti-Rebote (Debounce)\n")
-        archivo.write(f"Tiempo neto registrado de escaneo: {tiempo_acumulado:.2f} segundos\n\n")
-        for id_clase, total in inventario_real.items():
-            archivo.write(f"Marca: {NOMBRES_CLASES[id_clase]} | Unidades físicas contadas: {total}\n")
-    print(f"[DISCO] Archivo guardado como: {nombre_archivo}")
+print("Cámara iniciada. Presiona cualquier tecla en la ventana de video para arrancar el tiempo.")
 
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        alto_orig, ancho_orig, _ = frame.shape
+        ahora = time.time()
+        try:
+            data, addr_in = udp.recvfrom(1024)
+            comando_entrante = data.decode().strip()
+            if comando_entrante == "PAUSA":
+                sistema_activo = False
+                print("\n[RED] ¡Sistema pausado desde el botón de la Raspberry Pi!")
+            elif comando_entrante == "REANUDAR":
+                sistema_activo = True
+                print("\n[RED] Sistema reanudado desde la Raspberry Pi.")
+        except BlockingIOError:
+            pass 
 
-print("Iniciando transmisión prsionar algo")
-
-while True:
-    ret, frame = cap.read()
-    if not ret: break
-
-    alto_orig, ancho_orig, _ = frame.shape
-    
-    if sistema_activo:
         if not conteo_iniciado:
-            cv2.putText(frame, "PRESIONA CUALQUIER TECLA", 
+            cv2.putText(frame, "PRESIONA CUALQUIER TECLA PARA INICIAR", 
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
-            ahora = time.time()
-            tiempo_acumulado += (ahora - ultimo_tick)
-            ultimo_tick = ahora
-            
+            # Acumulamos tiempo SOLO si el sistema no está pausado
+            if sistema_activo:
+                tiempo_acumulado += (ahora - ultimo_tick)
+            ultimo_tick = ahora  # Siempre actualizamos el tick para que no de "saltos" de tiempo
+
             tiempo_restante = max(0.0, DURACION_MUESTREO - tiempo_acumulado)
-            cv2.putText(frame, f"TIEMPO RESTANTE: {int(tiempo_restante)}s", 
-                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             
+            # Textos en pantalla dependientes del estado
+            if sistema_activo:
+                cv2.putText(frame, f"TIEMPO RESTANTE: {int(tiempo_restante)}s", 
+                            (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            else:
+                cv2.putText(frame, "SISTEMA PAUSADO DESDE LA PI", 
+                            (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+            
+            # Dibujar el inventario en tiempo real en la pantalla
             y_pos = 80
             for id_clase, cantidad in inventario_real.items():
                 texto_inv = f"{NOMBRES_CLASES[id_clase]}: {cantidad}"
@@ -124,12 +114,13 @@ while True:
                 y_pos += 30
 
             if tiempo_acumulado >= DURACION_MUESTREO:
+                print("Tiempo concluido. Notificando a la Pi...")
+                udp.sendto("END".encode(), (IP_RASPBERRY, PUERTO_UDP))
                 break
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_redimensionado = cv2.resize(frame_rgb, (IMG_SIZE, IMG_SIZE))
         img_tensor = np.expand_dims(frame_redimensionado / 255.0, axis=0)
-
         prediccion = modelo.predict(img_tensor, verbose=0)[0]
 
         cajas_por_clase = {0: [], 1: [], 2: [], 3: []}
@@ -153,11 +144,9 @@ while True:
             if len(cajas_por_clase[clase_id]) > 0:
                 boxes_np = np.array(cajas_por_clase[clase_id], dtype=np.float32)
                 scores_np = np.array(conf_por_clase[clase_id], dtype=np.float32)
-                
                 indices_aprobados = tf.image.non_max_suppression(
                     boxes_np, scores_np, max_output_size=5, iou_threshold=UMBRAL_SUPERPOSICION
                 )
-                
                 if len(indices_aprobados) > 0:
                     detecciones_este_frame[clase_id] = True
 
@@ -170,7 +159,8 @@ while True:
                     cv2.putText(frame, f"{NOMBRES_CLASES[clase_id]} {scores_np[int(idx)]*100:.0f}%", 
                                 (px_xmin, px_ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_caja, 2)
 
-        if conteo_iniciado:
+        # Filtro Anti-Rebote (Se bloquea si el sistema está en PAUSA)
+        if conteo_iniciado and sistema_activo:
             for clase_id in range(4):
                 buffers[clase_id].append(detecciones_este_frame[clase_id])
                 if len(buffers[clase_id]) > TAMAÑO_BUFFER:
@@ -180,61 +170,54 @@ while True:
                     if all(buffers[clase_id]) and not estado_estable[clase_id]:
                         estado_estable[clase_id] = True
                         inventario_real[clase_id] += 1
-                        print(f"[{int(tiempo_acumulado)}s] ¡Nueva {NOMBRES_CLASES[clase_id]} estabilizada y contada!")
+                        comando = NOMBRES_CLASES[clase_id].upper()
+                        udp.sendto(comando.encode(), (IP_RASPBERRY, PUERTO_UDP))
+                        print(f"[{int(tiempo_acumulado)}s] {comando} contada y notificada.")
 
                     elif not any(buffers[clase_id]) and estado_estable[clase_id]:
                         estado_estable[clase_id] = False
 
         cv2.imshow(NOMBRE_VENTANA, frame)
-    
-    else:
-        if conteo_iniciado:
+        tecla = cv2.waitKey(1) & 0xFF
+        
+        if not conteo_iniciado and tecla != 255 and tecla != ord('q'): 
+            conteo_iniciado = True
             ultimo_tick = time.time()
+            udp.sendto("START".encode(), (IP_RASPBERRY, PUERTO_UDP))
+            print("\n=== INICIANDO CONTEO DE 1 MINUTO ===")
+            
+        elif tecla == ord('q') or tecla == ord('Q'): 
+            udp.sendto("END".encode(), (IP_RASPBERRY, PUERTO_UDP))
+            break
 
-        frame_emergencia = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
-        cv2.putText(frame_emergencia, "SISTEMA PARADO (EMERGENCIA)", (40, 220), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
-        cv2.putText(frame_emergencia, "El conteo actual se encuentra retenido.", (40, 260), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(frame_emergencia, "Presiona el BOTON FISICO o 'e' para reanudar.", (40, 300), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
-        cv2.imshow(NOMBRE_VENTANA, frame_emergencia)
+except KeyboardInterrupt:
+    print("\n[AVISO] Se detuvo el programa desde la terminal. Generando gráfica de todos modos...")
 
-    tecla = cv2.waitKey(1) & 0xFF
-    
-    if not conteo_iniciado and tecla != 255 and tecla != ord('e') and tecla != ord('E') and tecla != ord('q'): 
-        conteo_iniciado = True
-        ultimo_tick = time.time()
-        print("\n=== INICIANDO CONTEO")
-        
-    elif tecla == ord('e') or tecla == ord('E'):
-        callback_boton_emergencia()
-        
-    elif tecla == ord('q') or tecla == ord('Q'): 
-        break
+finally:
+    cap.release()
+    cv2.destroyAllWindows()
+    udp.close()
 
-cap.release()
-cv2.destroyAllWindows()
-if MODO_PRODUCCION_PI:
-    GPIO.cleanup()
-print("\nfin")
+    # ============================================================
+    # GENERACIÓN Y DESPLIEGUE DE LA GRÁFICA GARANTIZADA
+    # ============================================================
+    print("\nProcesando gráfica final...")
+    resultados_finales = {NOMBRES_CLASES[id_clase]: conteo for id_clase, conteo in inventario_real.items()}
+    top_3 = sorted(resultados_finales.items(), key=lambda x: x[1], reverse=True)[:3]
+    marcas = [item[0] for item in top_3]
+    valores = [item[1] for item in top_3]
 
-exportar_reporte_txt("resultados_fisicos_botellas.txt", "INVENTARIO FÍSICO FINAL DE BOTELLAS")
+    plt.figure(figsize=(8, 6))
+    bars = plt.bar(marcas, valores, color=['#FF5733', '#33FF57', '#3357FF'])
+    plt.title('Top 3 Botellas Contadas (Procesadas en Computadora)')
+    plt.xlabel('Marca')
+    plt.ylabel('Unidades Detectadas')
 
-resultados_finales = {NOMBRES_CLASES[id_clase]: conteo for id_clase, conteo in inventario_real.items()}
-top_3 = sorted(resultados_finales.items(), key=lambda x: x[1], reverse=True)[:3]
-marcas = [item[0] for item in top_3]
-valores = [item[1] for item in top_3]
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2, yval + (max(max(valores)*0.01, 0.1)), int(yval), ha='center', va='bottom')
 
-plt.figure(figsize=(8, 6))
-bars = plt.bar(marcas, valores, color=['#FF5733', '#33FF57', '#3357FF'])
-plt.title('Top 3 Botellas Físicas Contadas (1 Minuto)')
-plt.xlabel('Marca')
-plt.ylabel('Unidades Físicas')
-
-for bar in bars:
-    yval = bar.get_height()
-    plt.text(bar.get_x() + bar.get_width()/2, yval + (max(max(valores)*0.01, 0.1)), int(yval), ha='center', va='bottom')
-
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.savefig("grafica_botellas_PC.png")  
+    print("Gráfica guardada como 'grafica_botellas_PC.png'. Abriendo ventana...")
+    plt.show()
