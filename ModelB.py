@@ -8,22 +8,17 @@ from tensorflow.keras import layers, models, regularizers
 import time
 import matplotlib.pyplot as plt
 
-# ==============================================================================
-#  SISTEMA DE CONFIGURACIÓN DE ENTORNO (PC vs RASPBERRY PI)
-# ==============================================================================
 try:
     import RPi.GPIO as GPIO
     MODO_PRODUCCION_PI = True
 except ImportError:
     MODO_PRODUCCION_PI = False
 
-# --- VARIABLES DEL BOTÓN DE EMERGENCIA ---
 sistema_activo = True
 PIN_BOTON_EMERGENCIA = 23
 ultimo_tick = 0.0
 
 def callback_boton_emergencia(channel=None):
-    """Función de interrupción que detiene el sistema y resguarda datos en disco."""
     global sistema_activo, ultimo_tick
     
     if MODO_PRODUCCION_PI and channel is not None:
@@ -34,13 +29,12 @@ def callback_boton_emergencia(channel=None):
     sistema_activo = not sistema_activo
     
     if not sistema_activo:
-        print("\n⚠️ ¡PARADA DE EMERGENCIA ACTIVA! Guardando estado parcial en disco...")
+        print("\nPARADA DE EMERGENCIA")
         exportar_reporte_txt(f"reporte_emergencia_{int(time.time())}.txt", "RESPALDO POR PARADA DE EMERGENCIA")
     else:
-        print("\n✅ SISTEMA REANUDADO. Continuando proceso...")
+        print("\nContinuamos")
         ultimo_tick = time.time()
 
-# Inicialización de hardware si se detecta la Raspberry Pi
 if MODO_PRODUCCION_PI:
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(PIN_BOTON_EMERGENCIA, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -102,7 +96,7 @@ def exportar_reporte_txt(nombre_archivo, titulo_encabezado):
     print(f"[DISCO] Archivo guardado como: {nombre_archivo}")
 
 
-print("Iniciando transmisión. Presiona cualquier tecla para empezar el conteo de 60s.")
+print("Iniciando transmisión prsionar algo")
 
 while True:
     ret, frame = cap.read()
@@ -112,7 +106,7 @@ while True:
     
     if sistema_activo:
         if not conteo_iniciado:
-            cv2.putText(frame, "PRESIONA CUALQUIER TECLA PARA INICIAR (60s)", 
+            cv2.putText(frame, "PRESIONA CUALQUIER TECLA", 
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
             ahora = time.time()
@@ -202,7 +196,7 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
         cv2.putText(frame_emergencia, "El conteo actual se encuentra retenido.", (40, 260), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(frame_emergencia, "Presiona el BOTON FISICO (GPIO 23) o 'e' para reanudar.", (40, 300), 
+        cv2.putText(frame_emergencia, "Presiona el BOTON FISICO o 'e' para reanudar.", (40, 300), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
         cv2.imshow(NOMBRE_VENTANA, frame_emergencia)
 
@@ -211,7 +205,7 @@ while True:
     if not conteo_iniciado and tecla != 255 and tecla != ord('e') and tecla != ord('E') and tecla != ord('q'): 
         conteo_iniciado = True
         ultimo_tick = time.time()
-        print("\n=== INICIANDO CONTEO DE 60 SEGUNDOS ===")
+        print("\n=== INICIANDO CONTEO")
         
     elif tecla == ord('e') or tecla == ord('E'):
         callback_boton_emergencia()
@@ -223,9 +217,9 @@ cap.release()
 cv2.destroyAllWindows()
 if MODO_PRODUCCION_PI:
     GPIO.cleanup()
-print("\n=== TIEMPO FINALIZADO ===")
+print("\nfin")
 
-exportar_reporte_txt("resultados_fisicos_botellas.txt", "INVENTARIO FÍSICO FINAL DE BOTELLAS (1 MINUTO)")
+exportar_reporte_txt("resultados_fisicos_botellas.txt", "INVENTARIO FÍSICO FINAL DE BOTELLAS")
 
 resultados_finales = {NOMBRES_CLASES[id_clase]: conteo for id_clase, conteo in inventario_real.items()}
 top_3 = sorted(resultados_finales.items(), key=lambda x: x[1], reverse=True)[:3]
